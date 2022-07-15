@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<classpath>
+	<classpathentry exported="true" kind="lib" path="lib/GRITSJrapSTAX.-0.1-b11.jar"/>
+	<classpathentry exported="true" kind="lib" path="lib/log4j-1.2.12.jar"/>
+	<classpathentry exported="true" kind="lib" path="lib/GRITS-widgets-om.-0.1-b1.jar" sourcepath="/org.grits.toolbox.widgets.om"/>
+	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER">
+		<attributes>
+			<attribute name="module" value="true"/>
+		</attributes>
+	</classpathentry>
+	<classpathentry kind="con" path="org.eclipse.pde.core.requiredPlugins"/>
+	<classpathentry kind="src" path="src"/>
+	<classpathentry kind="lib" path="lib/GRITS.ms.om-0.1-b224.jar" sourcepath="/org.grits.toolbox.ms.om"/>
+	<classpathentry kind="lib" path="lib/jdom-1.0.jar"/>
+	<classpathentry kind="output" path="bin"/>
+</classpath>
