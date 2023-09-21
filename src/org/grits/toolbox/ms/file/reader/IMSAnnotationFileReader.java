@@ -1,11 +1,11 @@
 package org.grits.toolbox.ms.file.reader;
 
 import java.util.List;
+import java.util.Map;
 
 import org.grits.toolbox.ms.file.MSFile;
 import org.grits.toolbox.ms.file.scan.data.ScanView;
 import org.grits.toolbox.ms.om.data.Scan;
-import org.systemsbiology.jrap.grits.stax.MSXMLParser;
 
 public interface IMSAnnotationFileReader extends IMSFileReader {
 	/**
@@ -23,6 +23,15 @@ public interface IMSAnnotationFileReader extends IMSFileReader {
 	List<Scan> readMSFile (MSFile file, int scanNumber);
 	
 	/**
+	 * 
+	 * @param file MS file to be read
+	 * @param scanNumber scan number to be read
+	 * @param subScanMap list of all scans and their corresponding sub scans
+	 * @return List of {@link org.grits.toolbox.ms.om.Scan} from the given MS file for the given scan number
+	 */
+	List<Scan> readMSFile (MSFile file, int scanNumber, Map<Integer, List<Integer>> subScanMap);
+	
+	/**
 	 * readMSFile: general method to read an mzXML file.
 	 * 
 	 * NOTE: will not currently read the entire contents of an MS file. You have to specify at least one of
@@ -36,7 +45,7 @@ public interface IMSAnnotationFileReader extends IMSFileReader {
 	 * 
 	 */
 	List<Scan> readMSFile(MSFile file, int msLevel, int parentScanNum, int scanNum);
-	
+		
 	/**
 	 * 
 	 * @param file MS file to be read
@@ -44,6 +53,13 @@ public interface IMSAnnotationFileReader extends IMSFileReader {
 	 * @return List of scan numbers from the given MS file for the given parent scan number
 	 */
 	List<Integer> getScanList (MSFile file, int scanNumber);
+	
+	/**
+	 * 
+	 * @param file MS file to be read
+	 * @return a map of scans to their corresponding sub-scan numbers
+	 */
+	Map<Integer, List<Integer>> readMSFileForSubscans (MSFile file);
 	
 	/**
 	 * getMaxScanNumber: returns the last scan number of the MS file.

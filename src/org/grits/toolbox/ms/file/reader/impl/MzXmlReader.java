@@ -2,9 +2,11 @@ package org.grits.toolbox.ms.file.reader.impl;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.log4j.Logger;
 import org.grits.toolbox.ms.file.MSFile;
@@ -41,8 +43,17 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 	 */
 	@Override
 	public List<Scan> readMSFile(MSFile file, int scanNumber) {
+		return readMSFile(file, scanNumber, null);
+	}
+	
+	/**
+	 * {@inheritDoc}
+	 * used for LC/MS and MSPRofile experiments, will return null for other types (direct infusion, TIM)
+	 */
+	@Override
+	public List<Scan> readMSFile(MSFile file, int scanNumber, Map<Integer, List<Integer>> subScanMap) {
 		if( file.getExperimentType().equals(Method.MS_TYPE_LC) ) {
-			return readMzXmlFileForLCMSMS(file.getFileName(), scanNumber);
+			return readMzXmlFileForLCMSMS(file.getFileName(), scanNumber, subScanMap);
 		} else if (file.getExperimentType().equals(Method.MS_TYPE_MSPROFILE)) {
 			return readMzXmlFileForMSProfile(file.getFileName(), scanNumber);
 		} else if( file.getExperimentType().equals(Method.MS_TYPE_INFUSION) ) {
@@ -219,11 +230,15 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 	 * 
 	 */		
 	public List<Scan> readMzXmlFileForLCMSMS(String fileName, int iScanNumber) {
+		return readMzXmlFileForLCMSMS(fileName, iScanNumber, null);
+	}
+	
+	public List<Scan> readMzXmlFileForLCMSMS(String fileName, int scanNumber, Map<Integer, List<Integer>> subScanMap) {
 		File mzXMLFile = new File(fileName);
 		try {
 			MSXMLParser parser = new MSXMLParser(mzXMLFile.getAbsolutePath());
 			updateListeners("Reading XML file", -1);
-			List<Scan> scans = addAllScansLCMSMS(parser, iScanNumber);
+			List<Scan> scans = addAllScansLCMSMS(parser, scanNumber, subScanMap);
 			if( scans != null ) {
 				Collections.sort(scans);
 			}
@@ -548,10 +563,10 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 				return new ArrayList<>();
 			}
 			int iEndScan = parser.getMaxScanNumber();
-			int iMinMSLevel = parser.rapHeader(iStartScan).getMsLevel(); // can't assume we have MS1 scans. 
+		/*	int iMinMSLevel = parser.rapHeader(iStartScan).getMsLevel(); // can't assume we have MS1 scans. 
 			if( iMinMSLevel != 1 ) { // No MS1 scan? Treat as TIM then. 
 				return addAllScansTIM(parser);
-			}
+			}*/ //don't try to read as TIM, this can still be a direct infusion
 			boolean flag = true;
 			int precursorScanNum = 0;
 			List<Scan> scans = new ArrayList<>();
@@ -559,6 +574,7 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 			HashMap<Integer, org.systemsbiology.jrap.grits.stax.Scan> originalScanMap = new HashMap<Integer, org.systemsbiology.jrap.grits.stax.Scan>();
 			HashMap<Integer, Scan> msScanMap = new HashMap<Integer, Scan>();
 			HashMap<Double, Peak> ms1 = new HashMap<Double, Peak>();
+			List<String> scanErrorList = new ArrayList<>();
 
 			Scan prevParentScan = null;
 			List<Peak> ms1Peaks = new ArrayList<>();
@@ -633,15 +649,21 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 					}
 					msScan.setParentScan(precursorScanNum);
 					Scan parentScan = msScanMap.get(msScan.getParentScan());
+					if (parentScan == null) {
+						// we don't have the parent scan for this
+						// add it to the error list
+						scanErrorList.add(msScan.getParentScan()+"");
+						continue;
+					}
 
 					// this is a hack. We're trying to save memory by not storing all MS1 peaks in memory, but we need them until we've processed all of 
 					// the precursors. So once we find a new parent, clear the peak list of the previous one.
-					if( parentScan.getMsLevel() == 1 ) {
+				/*	if( parentScan.getMsLevel() == 1 ) {
 						if( prevParentScan != null && prevParentScan.getScanNo() != parentScan.getScanNo() ) {
 							prevParentScan.getPeaklist().clear();
 						}
 						prevParentScan = parentScan;
-					}
+					} */ //TODO removing temporarily to make it work with MS1 and MS2 scans that are far apart
 					msScan.setMsLevel(parentScan.getMsLevel()+1);
 					Peak peak = null;
 					List<Peak> lPeaks = parentScan.getPeaklist();
@@ -722,6 +744,10 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 					scan.setPeaklist(ms1Peaks);
 				}
 				scans.add(scan);
+			}
+			if (!scanErrorList.isEmpty()) {
+				if (!isCanceled())
+					updateErrorListener("Warning: Some scans are skipped since their parent scans are not in the file. Skipped scans: " + String.join(",", scanErrorList));
 			}
 			return scans;
 		} catch (Exception e) {
@@ -820,6 +846,246 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 			return null;
 		}
 
+	}
+	
+	public List<Scan> addAllScansLCMSMS(MSXMLParser parser, int parentScanNum, Map<Integer, List<Integer>> subScanMap) {
+		if (subScanMap == null || subScanMap.isEmpty()) 
+			return addAllScansLCMSMS(parser, parentScanNum);
+		
+		Scan msScan = new Scan();
+		try {
+			boolean flag = true;
+			List<Scan> scans = new ArrayList<>();
+			HashMap<Integer, Scan> msScanMap = new HashMap<Integer, Scan>();
+			HashMap<Double, Peak> ms1 = new HashMap<Double, Peak>();
+
+			List<Peak> ms1Peaks = new ArrayList<>();
+			
+			// System.out.println("scan No " + i);
+			org.systemsbiology.jrap.grits.stax.Scan jrapScan = parser.rap(parentScanNum);
+			if( jrapScan == null ) {
+				//if (!isCanceled())
+				//	updateErrorListener("Call to getJrapScan for scan number " + i + " returned null. Skipping.");
+				logger.debug("Call to getJrapScan for scan number " + parentScanNum + " returned null. Skipping.");
+				return null;
+			}
+			ScanHeader jrapScanHeader = jrapScan.getHeader();
+			if( jrapScanHeader == null ) {
+				//if (!isCanceled())
+				//	updateErrorListener("Call to jrapScan.getHeader() for scan number " + i + " returned null. Skipping.");
+				logger.debug("Call to jrapScan.getHeader() for scan number " + parentScanNum + " returned null. Skipping.");
+				return null;
+			}
+			if (jrapScan.getMassIntensityList() == null || jrapScan.getMassIntensityList().length == 0) {
+				logger.warn("Scan: " + parentScanNum + " has empty peak list.");
+			}
+			double maxIntensity = getMostAbundantPeak(jrapScan);
+			msScan = new Scan();
+			msScan.setMostAbundantPeak(maxIntensity);
+			msScan.setMsLevel(jrapScanHeader.getMsLevel());
+			String temp = jrapScanHeader.getPolarity();
+			msScan.setPolarity(null);
+			msScan.setIsCentroided( (jrapScanHeader.getCentroided() == 1) ); 
+			if( temp != null && ! temp.equals("") ) {
+				if ( temp.equals("+")) {
+					flag = true;
+				} else {
+					flag = false;
+				}					
+				msScan.setPolarity(flag);
+			}
+			msScan.setScanStart((double) jrapScanHeader.getLowMz());
+			msScan.setScanEnd((double) jrapScanHeader.getHighMz());
+			msScan.setScanNo(jrapScanHeader.getNum());
+			msScan.setActivationMethode(jrapScanHeader.getActivationMethod());
+			try {
+				msScan.setRetentionTime(jrapScanHeader.getDoubleRetentionTime());
+			} catch( Exception e1 ) {
+				;
+			}
+			
+			msScanMap.put(msScan.getScanNo(), msScan);
+			// get all the peaks of this scan
+			double[][] scanPeaks = jrapScan.getMassIntensityList();
+			if( scanPeaks != null ) {
+				double dLowMz = Double.MAX_VALUE;
+				double dHighMz = Double.MIN_VALUE;
+				double dTotalIntensity = 0.0;
+				for (int j = 0; j < scanPeaks[0].length; j++) {
+					if( isCanceled() ) {
+						return new ArrayList<>();
+					}
+					// ignore peaks w/ intensity = 0?
+					if( scanPeaks[1][j] <= 0.0 ) {
+						continue;
+					}
+					Peak peak = new Peak();
+					peak.setId(j + 1);
+					peak.setMz((double) scanPeaks[0][j]);
+					if( dLowMz > peak.getMz() ) {
+						dLowMz = peak.getMz();
+					}
+					if( dHighMz < peak.getMz() ) {
+						dHighMz = peak.getMz();
+					}
+					peak.setIntensity((double) scanPeaks[1][j]);
+					dTotalIntensity += peak.getIntensity();
+					double dRelInt = peak.getIntensity() / msScan.getMostAbundantPeak();
+					peak.setRelativeIntensity(dRelInt);
+					msScan.getPeaklist().add(peak);
+				}// for j
+				if( msScan.getScanStart() <= 0 ) {
+					msScan.setScanStart(dLowMz);
+				}
+				if( msScan.getScanEnd() <= 0 ) {
+					msScan.setScanEnd(dHighMz);
+				}
+				msScan.setTotalNumPeaks(scanPeaks[0].length);
+				msScan.setTotalIntensity(dTotalIntensity);
+			}
+
+			List<Integer> subScans = subScanMap.get(parentScanNum);
+			for (Integer scanNo: subScans) {
+				Scan subScan = processSubScan(parser, msScan, scanNo, ms1, subScanMap, msScanMap);
+				msScanMap.put(scanNo, subScan);
+			}
+			
+			int ms1PeakIndex = 1;
+			for (Peak peak : ms1.values()) {
+				if( isCanceled() ) {
+					return new ArrayList<>();
+				}
+				if( ! peak.getIsPrecursor() || peak.getPrecursorIntensity() == null )
+					continue;
+				peak.setId(ms1PeakIndex++);
+				ms1Peaks.add(peak);
+			}
+			for (Scan scan : msScanMap.values()) {
+				if( isCanceled() ) {
+					return new ArrayList<>();
+				}
+				if (scan.getMsLevel() == 1) {
+					scan.setPeaklist(ms1Peaks);
+				}
+				scans.add(scan);
+			}
+			return scans;
+		} catch (Exception e) {
+			logger.error(e.getMessage(), e);
+			return null;
+		}
+		
+	}
+	
+	Scan processSubScan (MSXMLParser parser, 
+			Scan parentScan, Integer scanNo, HashMap<Double, Peak> ms1, 
+			Map<Integer, List<Integer>> subScanMap, 
+			HashMap<Integer, Scan> msScanMap) {
+		org.systemsbiology.jrap.grits.stax.Scan jrapScan = parser.rap(scanNo);
+		ScanHeader jrapScanHeader = jrapScan.getHeader();
+		if( jrapScanHeader == null ) {
+			//if (!isCanceled())
+			//	updateErrorListener("Call to jrapScan.getHeader() for scan number " + i + " returned null. Skipping.");
+			logger.debug("Call to jrapScan.getHeader() for scan number " + scanNo + " returned null. Skipping.");
+			return null;
+		}
+		if (jrapScan.getMassIntensityList() == null || jrapScan.getMassIntensityList().length == 0) {
+			logger.warn("Scan: " + scanNo + " has empty peak list.");
+			//					continue;
+		}
+		boolean flag = true;
+		double maxIntensity = getMostAbundantPeak(jrapScan);
+		Scan msScan = new Scan();
+		msScan.setMostAbundantPeak(maxIntensity);
+		msScan.setMsLevel(jrapScanHeader.getMsLevel());
+		String temp = jrapScanHeader.getPolarity();
+		msScan.setPolarity(null);
+		msScan.setIsCentroided( (jrapScanHeader.getCentroided() == 1) ); 
+		if( temp != null && ! temp.equals("") ) {
+			if ( temp.equals("+")) {
+				flag = true;
+			} else {
+				flag = false;
+			}					
+			msScan.setPolarity(flag);
+		}
+		msScan.setScanStart((double) jrapScanHeader.getLowMz());
+		msScan.setScanEnd((double) jrapScanHeader.getHighMz());
+		msScan.setScanNo(jrapScanHeader.getNum());
+		msScan.setActivationMethode(jrapScanHeader.getActivationMethod());
+		try {
+			msScan.setRetentionTime(jrapScanHeader.getDoubleRetentionTime());
+		} catch( Exception e1 ) {
+			;
+		}
+		msScan.setParentScan(jrapScanHeader.getPrecursorScanNum());
+		msScan.setMsLevel(parentScan.getMsLevel()+1);
+		Peak peak = null;
+		List<Peak> lPeaks = parentScan.getPeaklist();
+		peak = findPeakInPeakList(lPeaks, (double) jrapScanHeader.getPrecursorMz());
+		if( peak == null ) {
+			peak = new Peak();
+			peak.setId(parentScan.getPeaklist().size()+1);
+			peak.setMz((double) jrapScanHeader.getPrecursorMz());
+			peak.setIntensity(0.0);
+			peak.setCharge(jrapScanHeader.getPrecursorCharge());
+			parentScan.getPeaklist().add(peak); // adding it if it doesn't exist!
+		} 
+		if( jrapScanHeader.getMsLevel() == 2 )
+			ms1.put((double) jrapScanHeader.getPrecursorMz(), peak);						
+		peak.setIsPrecursor(true);
+		peak.setPrecursorIntensity((double) jrapScanHeader.getPrecursorIntensity());
+		peak.setPrecursorCharge(jrapScanHeader.getPrecursorCharge());
+		peak.setPrecursorMz((double)jrapScanHeader.getPrecursorMz());
+
+		msScan.setPrecursor(peak);
+		parentScan.getSubScans().add(msScan.getScanNo());
+		
+		
+		// get all the peaks of this scan
+		double[][] scanPeaks = jrapScan.getMassIntensityList();
+		if( scanPeaks != null ) {
+			double dLowMz = Double.MAX_VALUE;
+			double dHighMz = Double.MIN_VALUE;
+			double dTotalIntensity = 0.0;
+			for (int j = 0; j < scanPeaks[0].length; j++) {
+				// ignore peaks w/ intensity = 0?
+				if( scanPeaks[1][j] <= 0.0 ) {
+					continue;
+				}
+				peak = new Peak();
+				peak.setId(j + 1);
+				peak.setMz((double) scanPeaks[0][j]);
+				if( dLowMz > peak.getMz() ) {
+					dLowMz = peak.getMz();
+				}
+				if( dHighMz < peak.getMz() ) {
+					dHighMz = peak.getMz();
+				}
+				peak.setIntensity((double) scanPeaks[1][j]);
+				dTotalIntensity += peak.getIntensity();
+				double dRelInt = peak.getIntensity() / msScan.getMostAbundantPeak();
+				peak.setRelativeIntensity(dRelInt);
+				msScan.getPeaklist().add(peak);
+			}// for j
+			if( msScan.getScanStart() <= 0 ) {
+				msScan.setScanStart(dLowMz);
+			}
+			if( msScan.getScanEnd() <= 0 ) {
+				msScan.setScanEnd(dHighMz);
+			}
+			msScan.setTotalNumPeaks(scanPeaks[0].length);
+			msScan.setTotalIntensity(dTotalIntensity);
+		}
+		
+		List<Integer> subScans = subScanMap.get(scanNo);
+		for (Integer subScanNo: subScans) {
+			Scan subScan = processSubScan(parser, msScan, subScanNo, ms1, subScanMap, msScanMap);
+			msScanMap.put(subScanNo, subScan);
+		}
+		
+		return msScan;
+		
 	}
 
 	public List<Scan> addAllScansLCMSMS(MSXMLParser parser, int parentScanNum ) {
@@ -944,10 +1210,10 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 					parentScan.getSubScans().add(msScan.getScanNo());
 				} 
 
-				if( i != parentScanNum && precursorScanNum != parentScanNum 
+				/*if( i != parentScanNum && precursorScanNum != parentScanNum 
 						&& msScan.getMsLevel() == iParentMSLevel ) { // we've parsed all subscans of requested parent
 					break;
-				}
+				}*/
 				msScanMap.put(msScan.getScanNo(), msScan);
 				// get all the peaks of this scan
 				double[][] scanPeaks = jrapScan.getMassIntensityList();
@@ -1649,6 +1915,35 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 			;
 		}
 		return msScan;
+	}
+
+	@Override
+	public Map<Integer, List<Integer>> readMSFileForSubscans(MSFile file) {
+		Map<Integer, List<Integer>> subScanMap = new HashMap<>();
+		File mzXMLFile = new File(file.getFileName());	
+		try {
+			MSXMLParser parser = new MSXMLParser(mzXMLFile.getAbsolutePath());
+			int iStartScan = getFirstScanNumber(parser);
+			int iEndScan = parser.getMaxScanNumber();
+			for (int i=iStartScan; i < iEndScan; i++) {
+				List<Integer> subScans = new ArrayList<>();
+				org.systemsbiology.jrap.grits.stax.Scan jrapScan = parser.rap(i);
+				subScanMap.put(i, subScans);
+			}
+			for (int i=iStartScan; i < iEndScan; i++) {
+				org.systemsbiology.jrap.grits.stax.Scan jrapScan = parser.rap(i);
+				ScanHeader jrapHeader = jrapScan.getHeader();
+				if (jrapHeader != null && jrapHeader.getMsLevel() > 1) {
+					Integer parentScan = jrapHeader.getPrecursorScanNum();
+					if (parentScan != null) {
+						subScanMap.get(parentScan).add(i);
+					}
+				}
+			}
+		} catch (Exception e) {
+			logger.error(e.getMessage(), e);
+		}
+		return subScanMap;
 	}
 
 }
