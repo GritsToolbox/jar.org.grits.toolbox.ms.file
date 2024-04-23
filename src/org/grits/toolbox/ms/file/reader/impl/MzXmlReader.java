@@ -1018,7 +1018,7 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 		} catch( Exception e1 ) {
 			;
 		}
-		msScan.setParentScan(jrapScanHeader.getPrecursorScanNum());
+		msScan.setParentScan(parentScan.getScanNo());
 		msScan.setMsLevel(parentScan.getMsLevel()+1);
 		Peak peak = null;
 		List<Peak> lPeaks = parentScan.getPeaklist();
@@ -1927,17 +1927,30 @@ public class MzXmlReader extends NotifyingProcess implements IMSAnnotationFileRe
 			int iEndScan = parser.getMaxScanNumber();
 			for (int i=iStartScan; i < iEndScan; i++) {
 				List<Integer> subScans = new ArrayList<>();
-				org.systemsbiology.jrap.grits.stax.Scan jrapScan = parser.rap(i);
 				subScanMap.put(i, subScans);
 			}
+			HashMap<Integer, Integer> lastParentOfEachLevel = new HashMap<Integer, Integer>();
 			for (int i=iStartScan; i < iEndScan; i++) {
 				org.systemsbiology.jrap.grits.stax.Scan jrapScan = parser.rap(i);
 				ScanHeader jrapHeader = jrapScan.getHeader();
+				lastParentOfEachLevel.put(jrapHeader.getMsLevel(), jrapHeader.getNum());
 				if (jrapHeader != null && jrapHeader.getMsLevel() > 1) {
 					Integer parentScan = jrapHeader.getPrecursorScanNum();
-					if (parentScan != null) {
+					if (parentScan == -1) {
+						int iParentLevel = jrapHeader.getMsLevel() - 1;
+						while( iParentLevel > 1 && ! lastParentOfEachLevel.containsKey(iParentLevel) ) {
+							iParentLevel--;
+						}
+						parentScan = lastParentOfEachLevel.get(iParentLevel);
+					}
+					
+					List<Integer> subscans = subScanMap.get(parentScan);
+					if (subscans == null) {
+						logger.error ("Invalid! Precursor scan for scan " + i + " is " + parentScan + " and cannot be found in the map");
+					} else {
 						subScanMap.get(parentScan).add(i);
 					}
+					
 				}
 			}
 		} catch (Exception e) {
